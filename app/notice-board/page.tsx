@@ -3,10 +3,12 @@
 import React, { useEffect, useState } from 'react';
 import { ThemeToggle } from "@/components/ThemeToggle";
 import Image from "next/image";
-import { Clock, Filter, Home, Search, Settings, Tag, CheckCircle, ArrowLeft } from "lucide-react";
+import { Clock, Filter, Home, Search, Settings, Tag, CheckCircle, ArrowLeft, Save, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { auth } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
 import Link from 'next/link';
+import { useAuth } from '@/hooks/useAuth';
+import { doc, updateDoc } from 'firebase/firestore';
 
 interface MaintenanceIssue {
   id: string;
@@ -83,7 +85,10 @@ export default function NoticeBoard() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'solved'>('all');
   const [error, setError] = useState<string | null>(null);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isUpdating, setIsUpdating] = useState<string | null>(null);
+  
+  // Replace the isLoggedIn state with the useAuth hook
+  const { isAuthenticated, isHousekeepingStaff, isLoading: authLoading } = useAuth();
 
   // Format date for display
   const formatDate = (date: Date): string => {
@@ -111,8 +116,6 @@ export default function NoticeBoard() {
   const fetchMaintenanceIssues = async () => {
     try {
       setIsLoading(true);
-      const user = auth.currentUser;
-      setIsLoggedIn(!!user);
       
       // Use the API endpoint with optional status filter
       let url = '/api/issue/all-issues';
@@ -176,6 +179,51 @@ export default function NoticeBoard() {
     }
   };
 
+  // New function to mark an issue as solved
+  const markIssueAsSolved = async (issueId: string) => {
+    if (!isHousekeepingStaff) {
+      console.error("Unauthorized attempt to update issue");
+      return;
+    }
+
+    try {
+      setIsUpdating(issueId);
+      
+      // Make API request to update the issue
+      const response = await fetch(`/api/issue/${issueId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ solved: true })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to update issue: ${response.statusText}`);
+      }
+
+      // Update local state
+      setIssues(prevIssues => 
+        prevIssues.map(issue => 
+          issue.id === issueId ? { ...issue, solved: true } : issue
+        )
+      );
+      
+      // Also update filtered issues
+      setFilteredIssues(prevIssues => 
+        prevIssues.map(issue => 
+          issue.id === issueId ? { ...issue, solved: true } : issue
+        )
+      );
+      
+    } catch (error) {
+      console.error("Error updating issue:", error);
+      // Optionally show an error message to the user
+    } finally {
+      setIsUpdating(null);
+    }
+  };
+
   // Apply filters when search term changes
   useEffect(() => {
     if (issues.length > 0) {
@@ -197,16 +245,27 @@ export default function NoticeBoard() {
 
   // Fetch issues when filter status changes or on component mount
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      // Always fetch issues, regardless of authentication status
-      fetchMaintenanceIssues().catch(err => {
-        console.error("Failed to fetch maintenance issues:", err);
-        setError("Failed to fetch maintenance issues. Please try again later.");
-      });
+    fetchMaintenanceIssues().catch(err => {
+      console.error("Failed to fetch maintenance issues:", err);
+      setError("Failed to fetch maintenance issues. Please try again later.");
     });
-
-    return () => unsubscribe();
   }, [filterStatus]);
+
+  const HousekeepingBanner = () => (
+    <div className="bg-green-50 dark:bg-green-900/30 border border-green-100 dark:border-green-700 rounded-lg p-4 mb-6">
+      <div className="flex items-center gap-3">
+        <div className="flex-shrink-0 bg-green-100 dark:bg-green-800 p-2 rounded-full">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-600 dark:text-green-300" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+          </svg>
+        </div>
+        <div className="flex-1">
+          <p className="text-green-700 dark:text-green-300 font-medium">Housekeeping staff mode</p>
+          <p className="text-green-600/80 dark:text-green-400/80 text-sm">You can mark maintenance issues as resolved</p>
+        </div>
+      </div>
+    </div>
+  );
 
   const LoginBanner = () => (
     <div className="bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-700 rounded-lg p-4 mb-6">
@@ -260,18 +319,23 @@ export default function NoticeBoard() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {!isLoggedIn && (
+            {!isAuthenticated ? (
               <Link href="/login" className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
                 Login
               </Link>
-            )}
+            ) : !isHousekeepingStaff ? (
+              <Link href="/dashboard" className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                Dashboard
+              </Link>
+            ) : null}
             <ThemeToggle />
           </div>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-6">
-        {!isLoggedIn && <LoginBanner />}
+        {!isAuthenticated && <LoginBanner />}
+        {isAuthenticated && isHousekeepingStaff && <HousekeepingBanner />}
         
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-md p-4">
           <div className="flex flex-col md:flex-row gap-4">
@@ -358,7 +422,7 @@ export default function NoticeBoard() {
                           {formatDate(issue.timestamp)}
                         </div>
                       </div>
-                      <div className="mt-2 sm:mt-0">
+                      <div className="mt-2 sm:mt-0 flex items-center gap-2">
                         <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
                           issue.solved
                             ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
@@ -366,6 +430,24 @@ export default function NoticeBoard() {
                         }`}>
                           {issue.solved ? 'Resolved' : 'Pending'}
                         </span>
+                        
+                        {/* Only show action buttons to housekeeping staff */}
+                        {isHousekeepingStaff && !issue.solved && (
+                          <button
+                            onClick={() => markIssueAsSolved(issue.id)}
+                            disabled={isUpdating === issue.id}
+                            className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-md text-xs font-medium flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {isUpdating === issue.id ? (
+                              <>Loading...</>
+                            ) : (
+                              <>
+                                <CheckCircle size={12} />
+                                Mark Resolved
+                              </>
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
                     
